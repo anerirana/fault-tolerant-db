@@ -27,13 +27,16 @@ import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.AddWatchMode;
 
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import java.net.InetAddress;
+import java.util.Collections;
 import java.util.List;
 
 
@@ -88,7 +91,8 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	private final ZooKeeper zk;
 	final private Session session;
     final private Cluster cluster;
-
+    
+    protected Integer last_executed_req_num = -1;
     protected final String myID;
     protected final MessageNIOTransport<String,String> serverMessenger;
 
@@ -125,15 +129,32 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
 		log.log(Level.INFO, "Server {0} started on {1}", new Object[]{this.myID, this.clientMessenger.getListeningSocketAddress()});
 		
-		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 3000, new Watcher() {
-            @Override
-            public void process(WatchedEvent event) {
-                if (event.getType() == Watcher.Event.EventType.NodeCreated) {
-                	System.out.println("Children data changed.");
-                }
-            }
-		});
+		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 3000, null);
+		
 		// TODO: Make sure to do any needed crash recovery here.
+		if (hasCheckpoint()) {
+			//restore();
+			//rollForward();		
+		} else {
+			try {
+				List<Integer> request_numbers = this.zk.getChildren("/requests",false).stream().map(Integer::valueOf).collect(Collectors.toList());
+				Collections.sort(request_numbers);
+				if (request_numbers.size() > 0 && request_numbers.get(0) == 0) {
+//						roll_forward();
+				} else {
+					System.out.println("ERROR! Did not find checkpoint or initial logs");
+				}
+			} catch (KeeperException e) {
+				e.printStackTrace();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			
+		}
+	}
+	
+	protected Boolean hasCheckpoint() {
+		return false;
 	}
 
 	/**
