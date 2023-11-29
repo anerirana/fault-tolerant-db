@@ -14,13 +14,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
-import org.json.JSONException;
-import org.json.JSONObject;
-
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.Session;
 
-import client.AVDBClient;
 import client.MyDBClient;
 
 import org.apache.zookeeper.KeeperException;
@@ -38,6 +34,8 @@ import java.util.stream.Collectors;
 import java.net.InetAddress;
 import java.util.Collections;
 import java.util.List;
+import java.util.Collections;
+
 
 
 /**
@@ -176,11 +174,49 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 * TODO: Gracefully close any threads or messengers you created.
 	 */
 	public void close() {
-		throw new RuntimeException("Not implemented");
+		super.close();
+		this.serverMessenger.stop();
+		session.close();
+		cluster.close();
+		try {
+            zk.close();
+        } catch (InterruptedException e) {
+        	LOGGER.log(Level.SEVERE, "Error closing ZooKeeper connection", e);
+        }
 	}
 
 	public static enum CheckpointRecovery {
 		CHECKPOINT, RESTORE;
+	}
+	
+	public static void takeSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
+        ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "snapshot", "-t", snapshotName, keyspace);
+        processBuilder.redirectErrorStream(true);
+
+        Process process = processBuilder.start();
+        process.waitFor();
+        // You can optionally read the process output or wait for the process to finish
+        // (e.g., using process.waitFor())
+    }
+	
+	public static void restoreSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
+        ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "clearsnapshot", "-t", snapshotName, keyspace);
+        processBuilder.redirectErrorStream(true);
+
+        Process process = processBuilder.start();
+        process.waitFor();
+        // You can optionally read the process output or wait for the process to finish
+        // (e.g., using process.waitFor())
+    }
+	
+	public void checkPoint(int lastExecReq, String keyspace, String snapshotName) throws IOException,InterruptedException {
+		takeSnapshot(keyspace, snapshotName);
+       
+	}
+	
+	public void restore(String keyspace, String snapshotName) throws IOException,InterruptedException {
+		restoreSnapshot(keyspace, snapshotName);
+		rollForward(last_executed_req_num);
 	}
 
 	public void trimLogs() {
@@ -204,10 +240,98 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	        }
 	    } catch (KeeperException | InterruptedException e) {
 	        e.printStackTrace();
-	        // Handle exceptions appropriately
+	    }
+	}
+	
+	public int rollForward(int lastExecReq) throws IOException {
+	    try {
+	        // Get the list of children from ZooKeeper
+	        List<String> children = zk.getChildren("/requests", false);
+	        
+	        // Sort the children to ensure they are processed in order
+	        Collections.sort(children);
+
+	        // Flag to determine if the lastExecReq has been found
+	        boolean foundLastExecReq = false;
+
+	        // Iterate through the children
+	        for (String node : children) {
+	            int nodeInt = Integer.parseInt(node);
+
+	            // Skip until we find the last executed request for that server
+	            if (!foundLastExecReq && nodeInt != lastExecReq + 1) {
+	                continue;
+	            } else {
+	                foundLastExecReq = true;
+	            }
+
+	            // Execute the request (replace this with your logic)
+	            session.execute(new String(zk.getData("/requests" + node, null,null)));
+
+	            // Update the lastExecReq
+	            lastExecReq = nodeInt;
+	        }
+	        
+	        if(lastExecReq % 50 == 0) {
+	        	checkPoint(lastExecReq, this.myID, "Snapshot1");
+	        }
+
+	    } catch (KeeperException | InterruptedException e) {
+	        e.printStackTrace();
+	    }
+	    return lastExecReq;
+	}
+
+	public String getPrimary() {
+	    List<String> children = null;
+	    try {
+	        // Get the list of children from ZooKeeper
+	        children = zk.getChildren("/live-nodes", false);
+	    } catch (KeeperException | InterruptedException e) {
+	        e.printStackTrace();
+	    }
+	    // Check if the list is not null and not empty before accessing elements
+	    if (children != null && !children.isEmpty()) {
+	        return children.get(0);
+	    } else {
+	        // Handle the case where the list is null or empty
+	        return null; // You can return a default value or handle it based on your requirements
 	    }
 	}
 
+	private class RequestsWatcher implements Watcher {
+
+        @Override
+        public void process(WatchedEvent event) {
+            if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
+	                // New znode created in /requests
+	            try {
+            		System.out.println("New znode created in /requests");
+	                rollForward(last_executed_req_num);
+	                List<String> children = zk.getChildren("/requests", false);
+	                if(children.size() >= 400) {
+	                	String primary = getPrimary();
+	                	this.serverMessenger.send(primary, "Trim Logs");
+	                }
+	            	registerRequestsWatcher();
+            	}
+            	catch (KeeperException | InterruptedException e) {
+        	        e.printStackTrace();
+        	    }
+            }
+        }
+    }
+	
+	private void registerRequestsWatcher() {
+        try {
+            // Get children and set a watch
+            List<String> children = zk.getChildren("/requests", new RequestsWatcher());
+            System.out.println("Current children of /requests: " + children);
+        } catch (InterruptedException | KeeperException e) {
+            e.printStackTrace();
+        }
+    }
+	
 	/**
 	 * @param args args[0] must be server.properties file and args[1] must be
 	 *             myID. The server prefix in the properties file must be
