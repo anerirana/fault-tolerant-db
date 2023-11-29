@@ -209,14 +209,14 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // (e.g., using process.waitFor())
     }
 	
-	public void checkPoint(int lastExecReq, String keyspace, String snapshotName) throws IOException,InterruptedException {
-		takeSnapshot(keyspace, snapshotName);
+	public void checkPoint() throws IOException,InterruptedException {
+		takeSnapshot(this.myID, "checkpoint_"+last_executed_req_num);
        
 	}
 	
-	public void restore(String keyspace, String snapshotName) throws IOException,InterruptedException {
-		restoreSnapshot(keyspace, snapshotName);
-		rollForward(last_executed_req_num);
+	public void restore(String snapshotName) throws IOException,InterruptedException {
+		restoreSnapshot(this.myID, snapshotName);
+		rollForward();
 	}
 
 	public void trimLogs() {
@@ -243,7 +243,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    }
 	}
 	
-	public int rollForward(int lastExecReq) throws IOException {
+	public int rollForward() throws IOException {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
@@ -259,7 +259,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	            int nodeInt = Integer.parseInt(node);
 
 	            // Skip until we find the last executed request for that server
-	            if (!foundLastExecReq && nodeInt != lastExecReq + 1) {
+	            if (!foundLastExecReq && nodeInt != last_executed_req_num + 1) {
 	                continue;
 	            } else {
 	                foundLastExecReq = true;
@@ -269,20 +269,20 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	            session.execute(new String(zk.getData("/requests" + node, null,null)));
 
 	            // Update the lastExecReq
-	            lastExecReq = nodeInt;
+	            last_executed_req_num = nodeInt;
 	        }
 	        
-	        if(lastExecReq % 50 == 0) {
-	        	checkPoint(lastExecReq, this.myID, "Snapshot1");
+	        if(last_executed_req_num % 50 == 0) {
+	        	checkPoint();
 	        }
 
 	    } catch (KeeperException | InterruptedException e) {
 	        e.printStackTrace();
 	    }
-	    return lastExecReq;
+	    return last_executed_req_num;
 	}
 
-	public String getPrimary() {
+	public InetSocketAddress getPrimary() {
 	    List<String> children = null;
 	    try {
 	        // Get the list of children from ZooKeeper
@@ -292,7 +292,9 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    }
 	    // Check if the list is not null and not empty before accessing elements
 	    if (children != null && !children.isEmpty()) {
-	        return children.get(0);
+	    	String[] parts = children.get(0).split(":");
+        	InetSocketAddress primaryIP = new InetSocketAddress(parts[0], Integer.parseInt(parts[1]) - ReplicatedServer.SERVER_PORT_OFFSET);
+	        return primaryIP;
 	    } else {
 	        // Handle the case where the list is null or empty
 	        return null; // You can return a default value or handle it based on your requirements
@@ -300,22 +302,21 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	}
 
 	private class RequestsWatcher implements Watcher {
-
         @Override
         public void process(WatchedEvent event) {
             if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
 	                // New znode created in /requests
 	            try {
             		System.out.println("New znode created in /requests");
-	                rollForward(last_executed_req_num);
+	                rollForward();
 	                List<String> children = zk.getChildren("/requests", false);
 	                if(children.size() >= 400) {
-	                	String primary = getPrimary();
-	                	this.serverMessenger.send(primary, "Trim Logs");
+	                	InetSocketAddress primary = getPrimary();
+	                	serverMessenger.send(primary, ("Trim Logs").getBytes());
 	                }
 	            	registerRequestsWatcher();
             	}
-            	catch (KeeperException | InterruptedException e) {
+            	catch (KeeperException | InterruptedException | IOException e) {
         	        e.printStackTrace();
         	    }
             }
