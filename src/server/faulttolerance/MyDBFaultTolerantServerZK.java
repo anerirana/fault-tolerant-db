@@ -39,6 +39,8 @@ import java.net.InetAddress;
 import java.util.Collections;
 import java.util.List;
 import java.util.Collections;
+import java.io.File;
+import java.util.ArrayList;
 
 
 
@@ -200,7 +202,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 				request.getBytes(), 
 				ZooDefs.Ids.OPEN_ACL_UNSAFE,
                 CreateMode.EPHEMERAL_SEQUENTIAL);
-		
 	}
 
 
@@ -233,8 +234,8 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // (e.g., using process.waitFor())
     }
 	
-	protected void restoreSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
-        ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "clearsnapshot", "-t", snapshotName, keyspace);
+	protected void restoreSnapshot(String snapshotName) throws IOException, InterruptedException {
+        ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "clearsnapshot", "-t", snapshotName, this.myID);
         processBuilder.redirectErrorStream(true);
 
         Process process = processBuilder.start();
@@ -243,13 +244,50 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // (e.g., using process.waitFor())
     }
 	
+	protected void restoreLatestSnapshot() throws IOException, InterruptedException {
+        // Specify the directory where snapshots are stored
+        String snapshotDirectory = "/var/lib/cassandra/data/" + this.myID + "/snapshots";
+
+        // Get a list of available snapshots
+        List<String> snapshotNames = getAvailableSnapshots(snapshotDirectory);
+
+        // Restore the latest snapshot (assuming the list is sorted)
+        if (!snapshotNames.isEmpty()) {
+            String latestSnapshot = snapshotNames.get(snapshotNames.size() - 1);
+            restoreSnapshot(latestSnapshot);
+        } else {
+            System.out.println("No snapshots found for keyspace: " + this.myID);
+        }
+    }
+
+	protected List<String> getAvailableSnapshots(String snapshotDirectory) {
+        List<String> snapshotNames = new ArrayList<>();
+
+        // Create a File object for the snapshot directory
+        File directory = new File(snapshotDirectory);
+
+        // Check if the directory exists
+        if (directory.exists() && directory.isDirectory()) {
+            // List the contents of the directory (snapshot names)
+            String[] snapshots = directory.list();
+
+            // Add each snapshot name to the list
+            if (snapshots != null) {
+                for (String snapshot : snapshots) {
+                    snapshotNames.add(snapshot);
+                }
+            }
+        }
+        return snapshotNames;
+    }
+	
 	protected void checkPoint() throws IOException,InterruptedException {
 		takeSnapshot(this.myID, "checkpoint_"+last_executed_req_num);
        
 	}
 	
 	protected void restore(String snapshotName) throws IOException,InterruptedException {
-		restoreSnapshot(this.myID, snapshotName);
+		restoreSnapshot(snapshotName);
 		rollForward();
 	}
 
