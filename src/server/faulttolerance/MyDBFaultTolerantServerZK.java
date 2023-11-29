@@ -9,6 +9,7 @@ import edu.umass.cs.utils.Util;
 import server.ReplicatedServer;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.net.InetSocketAddress;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -88,6 +89,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	public static final int MAX_LOG_SIZE = 400;
 
 	public static final int DEFAULT_PORT = 2181;
+	public static final String DEFAULT_ENCODING = "ISO-8859-1";
 	
 	private static final Logger LOGGER = Logger.getLogger(MyDBFaultTolerantServerZK.class.getName());
 	
@@ -132,7 +134,10 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
 		log.log(Level.INFO, "Server {0} started on {1}", new Object[]{this.myID, this.clientMessenger.getListeningSocketAddress()});
 		
-		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 3000, new Watcher() {
+		//Integer.toString(nodeConfig.getNodePort(myID)- ReplicatedServer.SERVER_PORT_OFFSET)
+		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 
+				3000, 
+				new Watcher() {
             @Override
             public void process(WatchedEvent event) {
                 if (event.getType() == Watcher.Event.EventType.NodeCreated) {
@@ -144,21 +149,23 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		try {
 			// Create sequential ephemeral node under live_nodes
 			String serverAddress = nodeConfig.getNodeAddress(myID) + ":" + nodeConfig.getNodePort(myID);
+			System.out.println(serverAddress);
 			this.zk.create("/live_nodes/" + this.myID, 
-					serverAddress.getBytes(), 
+					serverAddress.getBytes(DEFAULT_ENCODING), 
 					ZooDefs.Ids.OPEN_ACL_UNSAFE,
                     CreateMode.EPHEMERAL);
+			System.out.println("created: " + new String(this.zk.getData("/live_nodes/" + this.myID, null, null), DEFAULT_ENCODING));
 			List<String> request_numbers = this.zk.getChildren("/requests",false);
-			
 			// TODO: Make sure to do any needed crash recovery here.
 			if (hasCheckpoint()) {
-				//restore();
-				//rollForward();		
+				restoreLatestSnapshot();
+				rollForward();		
 			} else {
-				if (request_numbers.size() > 0 && Integer.valueOf(request_numbers.get(0)) == 0) {
-//						roll_forward();
-				} else {
-					System.out.println("ERROR! Did not find checkpoint or initial logs");
+				if (request_numbers.size() > 0) {
+					if (Integer.valueOf(request_numbers.get(0)) == 0)
+						rollForward();
+					else
+						System.out.println("ERROR! Did not find checkpoint or initial logs");
 				}
 			}
 			
@@ -182,18 +189,22 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
 	/**
 	 * TODO: process bytes received from clients here.
+	 * @throws InterruptedException 
+	 * @throws KeeperException 
 	 */
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
+		
+		try {
 		String request = new String(bytes);
 		InetSocketAddress primary = getPrimary();
-		try {
+			
 		JSONObject packet = new JSONObject();
 		packet.put(MyDBClient.Keys.REQUEST.toString(), request);
 		packet.put(MyDBClient.Keys.TYPE.toString(), "CLIENT_UPDATE");
 		
 		this.serverMessenger.send(primary, packet.toString().getBytes());
 		}
-		catch(JSONException | IOException e) {
+		catch(JSONException | IOException | InterruptedException | KeeperException e) {
 			e.printStackTrace();
 		}
 	}
@@ -370,23 +381,25 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    return last_executed_req_num;
 	}
 
-	protected InetSocketAddress getPrimary() {
-	    List<String> children = null;
+	protected InetSocketAddress getPrimary() throws KeeperException, InterruptedException {
 	    try {
 	        // Get the list of children from ZooKeeper
-	        children = zk.getChildren("/live-nodes", false);
-	    } catch (KeeperException | InterruptedException e) {
+	    	 List<String> children = zk.getChildren("/live_nodes", false);
+
+		    // Check if the list is not null and not empty before accessing elements
+		    if (children != null && !children.isEmpty()) {
+		    	
+		    	String[] parts = new String(this.zk.getData("/live_nodes/" + this.myID, null, null), DEFAULT_ENCODING).split(":");
+	        	InetSocketAddress primaryIP = new InetSocketAddress(parts[0].split("/")[0], Integer.parseInt(parts[1]) - ReplicatedServer.SERVER_PORT_OFFSET);
+		        return primaryIP;
+		    } else {
+		        // Handle the case where the list is null or empty
+		        return null; // You can return a default value or handle it based on your requirements
+		    }
+	    } catch (KeeperException | InterruptedException | UnsupportedEncodingException e) {
 	        e.printStackTrace();
 	    }
-	    // Check if the list is not null and not empty before accessing elements
-	    if (children != null && !children.isEmpty()) {
-	    	String[] parts = children.get(0).split(":");
-        	InetSocketAddress primaryIP = new InetSocketAddress(parts[0], Integer.parseInt(parts[1]) - ReplicatedServer.SERVER_PORT_OFFSET);
-	        return primaryIP;
-	    } else {
-	        // Handle the case where the list is null or empty
-	        return null; // You can return a default value or handle it based on your requirements
-	    }
+	    return null;
 	}
 
 	protected class RequestsWatcher implements Watcher {
