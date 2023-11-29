@@ -7,6 +7,7 @@ import edu.umass.cs.nio.nioutils.NIOHeader;
 import edu.umass.cs.nio.nioutils.NodeConfigUtils;
 import edu.umass.cs.utils.Util;
 import server.ReplicatedServer;
+import server.AVDBReplicatedServer.Type;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -17,6 +18,7 @@ import java.util.logging.Level;
 import com.datastax.driver.core.Cluster;
 import com.datastax.driver.core.Session;
 
+import client.AVDBClient;
 import client.MyDBClient;
 
 import org.apache.zookeeper.KeeperException;
@@ -24,6 +26,7 @@ import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
+import org.json.JSONObject;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs;
@@ -129,25 +132,37 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		
 		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 3000, null);
 		
-		// TODO: Make sure to do any needed crash recovery here.
-		if (hasCheckpoint()) {
-			//restore();
-			//rollForward();		
-		} else {
-			try {
-				List<Integer> request_numbers = this.zk.getChildren("/requests",false).stream().map(Integer::valueOf).collect(Collectors.toList());
+		try {
+			// Create sequential ephemeral node under live_nodes
+			String serverAddress = nodeConfig.getNodeAddress(myID) + ":" + nodeConfig.getNodePort(myID);
+			this.zk.create("/live_nodes/" + this.myID, 
+					serverAddress.getBytes(), 
+					ZooDefs.Ids.OPEN_ACL_UNSAFE,
+                    CreateMode.EPHEMERAL_SEQUENTIAL);
+			List<Integer> request_numbers = this.zk.getChildren("/requests",false).stream().map(Integer::valueOf).collect(Collectors.toList());
+			
+			// TODO: Make sure to do any needed crash recovery here.
+			if (hasCheckpoint()) {
+				//restore();
+				//rollForward();		
+			} else {
+				
+				
 				Collections.sort(request_numbers);
 				if (request_numbers.size() > 0 && request_numbers.get(0) == 0) {
 //						roll_forward();
 				} else {
 					System.out.println("ERROR! Did not find checkpoint or initial logs");
 				}
-			} catch (KeeperException e) {
-				e.printStackTrace();
-			} catch (InterruptedException e) {
-				e.printStackTrace();
 			}
 			
+			registerRequestsWatcher();
+				
+		}
+		catch (KeeperException e) {
+				e.printStackTrace();
+		} catch (InterruptedException e) {
+				e.printStackTrace();
 		}
 	}
 	
@@ -159,14 +174,21 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 * TODO: process bytes received from clients here.
 	 */
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
-		throw new RuntimeException("Not implemented");
+		String request = new String(bytes);
+		String primary = getPrimary();
+		
+		JSONObject packet = new JSONObject();
+		packet.put(MyDBClient.Keys.REQUEST.toString(), request);
+		packet.put(MyDBClient.Keys.TYPE.toString(), "CLIENT_UPDATE");
+		
+		this.serverMessenger.send(primary, packet.toString().getBytes());
 	}
 
 	/**
 	 * TODO: process bytes received from fellow servers here.
 	 */
 	protected void handleMessageFromServer(byte[] bytes, NIOHeader header) {
-		throw new RuntimeException("Not implemented");
+		byte[] b = this.zk.getData("/requests",false, null);
 	}
 
 
@@ -313,6 +335,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	                if(children.size() >= 400) {
 	                	InetSocketAddress primary = getPrimary();
 	                	serverMessenger.send(primary, ("Trim Logs").getBytes());
+
 	                }
 	            	registerRequestsWatcher();
             	}
