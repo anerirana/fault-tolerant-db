@@ -216,7 +216,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 			this.zk.create("/requests/", 
 					request.getBytes(), 
 					ZooDefs.Ids.OPEN_ACL_UNSAFE,
-	                CreateMode.EPHEMERAL_SEQUENTIAL);
+	                CreateMode.PERSISTENT_SEQUENTIAL);
         } catch (KeeperException | JSONException | InterruptedException e) {
             e.printStackTrace();
         }
