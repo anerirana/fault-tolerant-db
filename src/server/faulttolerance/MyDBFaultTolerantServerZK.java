@@ -7,7 +7,6 @@ import edu.umass.cs.nio.nioutils.NIOHeader;
 import edu.umass.cs.nio.nioutils.NodeConfigUtils;
 import edu.umass.cs.utils.Util;
 import server.ReplicatedServer;
-import server.AVDBReplicatedServer.Type;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -133,7 +132,14 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
 		log.log(Level.INFO, "Server {0} started on {1}", new Object[]{this.myID, this.clientMessenger.getListeningSocketAddress()});
 		
-		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 3000, null);
+		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 3000, new Watcher() {
+            @Override
+            public void process(WatchedEvent event) {
+                if (event.getType() == Watcher.Event.EventType.NodeCreated) {
+                	System.out.println("Children data changed.");
+                }
+            }
+        });
 		
 		try {
 			// Create sequential ephemeral node under live_nodes
@@ -180,12 +186,16 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
 		String request = new String(bytes);
 		InetSocketAddress primary = getPrimary();
-		
+		try {
 		JSONObject packet = new JSONObject();
 		packet.put(MyDBClient.Keys.REQUEST.toString(), request);
 		packet.put(MyDBClient.Keys.TYPE.toString(), "CLIENT_UPDATE");
 		
 		this.serverMessenger.send(primary, packet.toString().getBytes());
+		}
+		catch(JSONException | IOException e) {
+			e.printStackTrace();
+		}
 	}
 
 	/**
@@ -207,7 +217,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 					request.getBytes(), 
 					ZooDefs.Ids.OPEN_ACL_UNSAFE,
 	                CreateMode.EPHEMERAL_SEQUENTIAL);
-        } catch (JSONException e) {
+        } catch (KeeperException | JSONException | InterruptedException e) {
             e.printStackTrace();
         }
 	}
@@ -396,7 +406,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	                }
 	            	registerRequestsWatcher();
             	}
-            	catch (KeeperException | InterruptedException | IOException e) {
+            	catch (KeeperException | InterruptedException | IOException | JSONException e) {
         	        e.printStackTrace();
         	    }
             }
