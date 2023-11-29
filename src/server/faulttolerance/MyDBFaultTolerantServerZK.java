@@ -167,7 +167,11 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	}
 	
 	protected Boolean hasCheckpoint() {
-		return false;
+		// Specify the directory where snapshots are stored
+        String snapshotDirectory = "/var/lib/cassandra/data/" + this.myID + "/snapshots";
+
+        // Check if any snapshot is available
+        return getAvailableSnapshots(snapshotDirectory).size() > 0;
 	}
 
 	/**
@@ -188,20 +192,24 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 * TODO: process bytes received from fellow servers here.
 	 */
 	protected void handleMessageFromServer(byte[] bytes, NIOHeader header) {
-		String request = new String(bytes);
 		try {
-			JSONObject json = new JSONObject(request);
-			request = json.getString(AVDBClient.Keys.REQUEST
-	                .toString());
-            
+			JSONObject json = new JSONObject(new String(bytes));
+			String request = json.getString(AVDBClient.Keys.REQUEST.toString()); 
+			String requestType = json.getString(AVDBClient.Keys.TYPE.toString());
+					
+
+			if (requestType == "CLIENT_UPDATE") {
+				
+			} else if (requestType == "TRIM_LOGS") {
+				trimLogs();
+			}
+			this.zk.create("/requests/", 
+					request.getBytes(), 
+					ZooDefs.Ids.OPEN_ACL_UNSAFE,
+	                CreateMode.EPHEMERAL_SEQUENTIAL);
         } catch (JSONException e) {
             e.printStackTrace();
         }
-		
-		this.zk.create("/requests/", 
-				request.getBytes(), 
-				ZooDefs.Ids.OPEN_ACL_UNSAFE,
-                CreateMode.EPHEMERAL_SEQUENTIAL);
 	}
 
 
@@ -254,6 +262,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // Restore the latest snapshot (assuming the list is sorted)
         if (!snapshotNames.isEmpty()) {
             String latestSnapshot = snapshotNames.get(snapshotNames.size() - 1);
+            this.last_executed_req_num = Integer.valueOf(latestSnapshot.split("_")[0]);
             restoreSnapshot(latestSnapshot);
         } else {
             System.out.println("No snapshots found for keyspace: " + this.myID);
@@ -299,7 +308,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	        // Check if there are at least 400 elements
 	        if (children.size() >= 400) {
 	            // Get the sublist of the first 100 elements
-	            List<String> sublist = children.subList(0, 100);
+	            List<String> sublist = children.subList(0, 50);
 
 	            // Remove the first 100 elements from the list
 	            children.removeAll(sublist);
@@ -319,9 +328,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
-	        
-	        // Sort the children to ensure they are processed in order
-	        Collections.sort(children);
 
 	        // Flag to determine if the lastExecReq has been found
 	        boolean foundLastExecReq = false;
@@ -383,9 +389,10 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	                rollForward();
 	                List<String> children = zk.getChildren("/requests", false);
 	                if(children.size() >= 400) {
-	                	InetSocketAddress primary = getPrimary();
-	                	serverMessenger.send(primary, ("Trim Logs").getBytes());
-
+	                	InetSocketAddress primary = getPrimary();    	
+	                	JSONObject packet = new JSONObject();
+	            		packet.put(MyDBClient.Keys.TYPE.toString(), "TRIM_LOGS");
+	            		serverMessenger.send(primary, packet.toString().getBytes());
 	                }
 	            	registerRequestsWatcher();
             	}
