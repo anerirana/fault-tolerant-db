@@ -26,6 +26,7 @@ import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
@@ -138,18 +139,15 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 			this.zk.create("/live_nodes/" + this.myID, 
 					serverAddress.getBytes(), 
 					ZooDefs.Ids.OPEN_ACL_UNSAFE,
-                    CreateMode.EPHEMERAL_SEQUENTIAL);
-			List<Integer> request_numbers = this.zk.getChildren("/requests",false).stream().map(Integer::valueOf).collect(Collectors.toList());
+                    CreateMode.EPHEMERAL);
+			List<String> request_numbers = this.zk.getChildren("/requests",false);
 			
 			// TODO: Make sure to do any needed crash recovery here.
 			if (hasCheckpoint()) {
 				//restore();
 				//rollForward();		
 			} else {
-				
-				
-				Collections.sort(request_numbers);
-				if (request_numbers.size() > 0 && request_numbers.get(0) == 0) {
+				if (request_numbers.size() > 0 && Integer.valueOf(request_numbers.get(0)) == 0) {
 //						roll_forward();
 				} else {
 					System.out.println("ERROR! Did not find checkpoint or initial logs");
@@ -175,7 +173,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 */
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
 		String request = new String(bytes);
-		String primary = getPrimary();
+		InetSocketAddress primary = getPrimary();
 		
 		JSONObject packet = new JSONObject();
 		packet.put(MyDBClient.Keys.REQUEST.toString(), request);
@@ -188,7 +186,21 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 * TODO: process bytes received from fellow servers here.
 	 */
 	protected void handleMessageFromServer(byte[] bytes, NIOHeader header) {
-		byte[] b = this.zk.getData("/requests",false, null);
+		String request = new String(bytes);
+		try {
+			JSONObject json = new JSONObject(request);
+			request = json.getString(AVDBClient.Keys.REQUEST
+	                .toString());
+            
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+		
+		this.zk.create("/requests/", 
+				request.getBytes(), 
+				ZooDefs.Ids.OPEN_ACL_UNSAFE,
+                CreateMode.EPHEMERAL_SEQUENTIAL);
+		
 	}
 
 
@@ -211,7 +223,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		CHECKPOINT, RESTORE;
 	}
 	
-	public static void takeSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
+	protected void takeSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
         ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "snapshot", "-t", snapshotName, keyspace);
         processBuilder.redirectErrorStream(true);
 
@@ -221,7 +233,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // (e.g., using process.waitFor())
     }
 	
-	public static void restoreSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
+	protected void restoreSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
         ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "clearsnapshot", "-t", snapshotName, keyspace);
         processBuilder.redirectErrorStream(true);
 
@@ -231,17 +243,17 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // (e.g., using process.waitFor())
     }
 	
-	public void checkPoint() throws IOException,InterruptedException {
+	protected void checkPoint() throws IOException,InterruptedException {
 		takeSnapshot(this.myID, "checkpoint_"+last_executed_req_num);
        
 	}
 	
-	public void restore(String snapshotName) throws IOException,InterruptedException {
+	protected void restore(String snapshotName) throws IOException,InterruptedException {
 		restoreSnapshot(this.myID, snapshotName);
 		rollForward();
 	}
 
-	public void trimLogs() {
+	protected void trimLogs() {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
@@ -265,7 +277,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    }
 	}
 	
-	public int rollForward() throws IOException {
+	protected int rollForward() throws IOException {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
@@ -304,7 +316,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    return last_executed_req_num;
 	}
 
-	public InetSocketAddress getPrimary() {
+	protected InetSocketAddress getPrimary() {
 	    List<String> children = null;
 	    try {
 	        // Get the list of children from ZooKeeper
@@ -323,7 +335,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    }
 	}
 
-	private class RequestsWatcher implements Watcher {
+	protected class RequestsWatcher implements Watcher {
         @Override
         public void process(WatchedEvent event) {
             if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
@@ -346,7 +358,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         }
     }
 	
-	private void registerRequestsWatcher() {
+	protected void registerRequestsWatcher() {
         try {
             // Get children and set a watch
             List<String> children = zk.getChildren("/requests", new RequestsWatcher());
