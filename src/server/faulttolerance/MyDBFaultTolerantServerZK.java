@@ -273,8 +273,8 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
         Process process = processBuilder.start();
         process.waitFor();
-        // You can optionally read the process output or wait for the process to finish
-        // (e.g., using process.waitFor())
+//         You can optionally read the process output or wait for the process to finish
+//         (e.g., using process.waitFor())
     }
 	
 	protected void restoreLatestSnapshot() throws IOException, InterruptedException {
@@ -369,7 +369,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	            }
 
 	            // Execute the request (replace this with your logic)
-	            session.execute(new String(zk.getData("/requests" + node, null,null)));
+	            session.execute(new String(zk.getData("/requests/" + node, null,null)));
 
 	            // Update the lastExecReq
 	            last_executed_req_num = nodeInt;
