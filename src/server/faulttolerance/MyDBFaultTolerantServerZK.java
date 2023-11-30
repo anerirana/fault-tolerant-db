@@ -123,8 +123,12 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		log.log(Level.INFO, "Server {0} added cluster contact point", new Object[]{myID,});
 
 		this.myID = myID;
-
-		this.serverMessenger =  new MessageNIOTransport<String, String>(myID, nodeConfig, new AbstractBytePacketDemultiplexer() {
+		
+		
+		this.serverMessenger =  new
+                MessageNIOTransport<String, String>(myID, nodeConfig,
+                new
+                        AbstractBytePacketDemultiplexer() {
                             @Override
                             public boolean handleMessage(byte[] bytes, NIOHeader nioHeader) {
                                 handleMessageFromServer(bytes, nioHeader);
@@ -154,8 +158,8 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 					serverAddress.getBytes(DEFAULT_ENCODING), 
 					ZooDefs.Ids.OPEN_ACL_UNSAFE,
                     CreateMode.EPHEMERAL);
-			System.out.println("created: " + new String(this.zk.getData("/live_nodes/" + this.myID, null, null), DEFAULT_ENCODING));
 			List<String> request_numbers = this.zk.getChildren("/requests",false);
+			Collections.sort(request_numbers, Collections.reverseOrder());
 			// TODO: Make sure to do any needed crash recovery here.
 			if (hasCheckpoint()) {
 				restoreLatestSnapshot();
@@ -192,8 +196,8 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 * @throws InterruptedException 
 	 * @throws KeeperException 
 	 */
+	@Override
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
-		
 		try {
 		String request = new String(bytes);
 		InetSocketAddress primary = getPrimary();
@@ -219,9 +223,9 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 			String requestType = json.getString(AVDBClient.Keys.TYPE.toString());
 					
 
-			if (requestType == "CLIENT_UPDATE") {
+			if (requestType.equals("CLIENT_UPDATE")) {
 				
-			} else if (requestType == "TRIM_LOGS") {
+			} else if (requestType.equals("TRIM_LOGS")) {
 				trimLogs();
 			}
 			this.zk.create("/requests/", 
@@ -325,7 +329,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
-
+	        Collections.sort(children, Collections.reverseOrder());
 	        // Check if there are at least 400 elements
 	        if (children.size() >= 400) {
 	            // Get the sublist of the first 100 elements
@@ -349,7 +353,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
-
+	        Collections.sort(children, Collections.reverseOrder());
 	        // Flag to determine if the lastExecReq has been found
 	        boolean foundLastExecReq = false;
 
@@ -390,7 +394,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		    if (children != null && !children.isEmpty()) {
 		    	
 		    	String[] parts = new String(this.zk.getData("/live_nodes/" + this.myID, null, null), DEFAULT_ENCODING).split(":");
-	        	InetSocketAddress primaryIP = new InetSocketAddress(parts[0].split("/")[0], Integer.parseInt(parts[1]) - ReplicatedServer.SERVER_PORT_OFFSET);
+	        	InetSocketAddress primaryIP = new InetSocketAddress(parts[0].split("/")[0], Integer.parseInt(parts[1]));
 		        return primaryIP;
 		    } else {
 		        // Handle the case where the list is null or empty
@@ -430,6 +434,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         try {
             // Get children and set a watch
             List<String> children = zk.getChildren("/requests", new RequestsWatcher());
+            Collections.sort(children, Collections.reverseOrder());
             System.out.println("Current children of /requests: " + children);
         } catch (InterruptedException | KeeperException e) {
             e.printStackTrace();
@@ -445,11 +450,9 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 * @throws IOException
 	 */
 	public static void main(String[] args) throws IOException {
-		new MyDBFaultTolerantServerZK(NodeConfigUtils.getNodeConfigFromFile
-				(args[0], ReplicatedServer.SERVER_PREFIX, ReplicatedServer
-						.SERVER_PORT_OFFSET), args[1], args.length > 2 ? Util
-				.getInetSocketAddressFromString(args[2]) : new
-				InetSocketAddress("localhost", 9042));
+		new MyDBFaultTolerantServerZK(NodeConfigUtils.getNodeConfigFromFile(args[0], ReplicatedServer.SERVER_PREFIX, ReplicatedServer.SERVER_PORT_OFFSET), 
+				args[1], 
+				args.length > 2 ? Util.getInetSocketAddressFromString(args[2]) : new InetSocketAddress("localhost", 9042));
 	}
 
 }
