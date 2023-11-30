@@ -258,24 +258,23 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	}
 	
 	protected void takeSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
-        ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "snapshot", "-t", snapshotName, keyspace);
-        processBuilder.redirectErrorStream(true);
+	    String nodetoolPath = "/opt/homebrew/Cellar/cassandra/4.1.3/bin/nodetool"; // Update this path
+	    ProcessBuilder processBuilder = new ProcessBuilder(nodetoolPath, "snapshot", "-t", snapshotName, keyspace);
+	    processBuilder.redirectErrorStream(true);
 
-        Process process = processBuilder.start();
-        process.waitFor();
-        // You can optionally read the process output or wait for the process to finish
-        // (e.g., using process.waitFor())
-    }
-	
+	    Process process = processBuilder.start();
+	    process.waitFor();
+	}
+
 	protected void restoreSnapshot(String snapshotName) throws IOException, InterruptedException {
-        ProcessBuilder processBuilder = new ProcessBuilder("nodetool", "clearsnapshot", "-t", snapshotName, this.myID);
-        processBuilder.redirectErrorStream(true);
+	    String nodetoolPath = "/opt/homebrew/Cellar/cassandra/4.1.3/bin/nodetool"; // Update this path
+	    ProcessBuilder processBuilder = new ProcessBuilder(nodetoolPath, "clearsnapshot", "-t", snapshotName, this.myID);
+	    processBuilder.redirectErrorStream(true);
 
-        Process process = processBuilder.start();
-        process.waitFor();
-//         You can optionally read the process output or wait for the process to finish
-//         (e.g., using process.waitFor())
-    }
+	    Process process = processBuilder.start();
+	    process.waitFor();
+	}
+
 	
 	protected void restoreLatestSnapshot() throws IOException, InterruptedException {
         // Specify the directory where snapshots are stored
