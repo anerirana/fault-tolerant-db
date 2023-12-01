@@ -9,6 +9,8 @@ import edu.umass.cs.utils.Util;
 import server.ReplicatedServer;
 
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.InetSocketAddress;
 import java.util.concurrent.ConcurrentHashMap;
@@ -37,10 +39,16 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.net.InetAddress;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Collections;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
+import com.datastax.driver.core.ResultSet;
+import com.datastax.driver.core.Row;
 
 
 
@@ -138,7 +146,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
 		log.log(Level.INFO, "Server {0} started on {1}", new Object[]{this.myID, this.clientMessenger.getListeningSocketAddress()});
 		
-		//Integer.toString(nodeConfig.getNodePort(myID)- ReplicatedServer.SERVER_PORT_OFFSET)
 		this.zk = new ZooKeeper("localhost:" + DEFAULT_PORT, 
 				3000, 
 				new Watcher() {
@@ -151,20 +158,20 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         });
 		
 		try {
+			// TODO: Make sure to do any needed crash recovery here.
 			// Create sequential ephemeral node under live_nodes
 			String serverAddress = nodeConfig.getNodeAddress(myID) + ":" + nodeConfig.getNodePort(myID);
-			System.out.println(serverAddress);
 			this.zk.create("/live_nodes/" + this.myID, 
 					serverAddress.getBytes(DEFAULT_ENCODING), 
 					ZooDefs.Ids.OPEN_ACL_UNSAFE,
                     CreateMode.EPHEMERAL);
-			List<String> request_numbers = this.zk.getChildren("/requests",false);
-			Collections.sort(request_numbers, Collections.reverseOrder());
-			// TODO: Make sure to do any needed crash recovery here.
+			
 			if (hasCheckpoint()) {
 				restoreLatestSnapshot();
 				rollForward();		
-			} else {
+			} else {			
+				List<String> request_numbers = this.zk.getChildren("/requests",false);
+				Collections.sort(request_numbers);
 				if (request_numbers.size() > 0) {
 					if (Integer.valueOf(request_numbers.get(0)) == 0)
 						rollForward();
@@ -198,6 +205,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 */
 	@Override
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
+		System.out.println(this.myID + " received request");
 		try {
 		String request = new String(bytes);
 		InetSocketAddress primary = getPrimary();
@@ -248,6 +256,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		cluster.close();
 		try {
             zk.close();
+            System.out.println("zookeper connection closed");
         } catch (InterruptedException e) {
         	LOGGER.log(Level.SEVERE, "Error closing ZooKeeper connection", e);
         }
@@ -258,27 +267,59 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	}
 	
 	protected void takeSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
-	    String nodetoolPath = "/opt/homebrew/Cellar/cassandra/4.1.3/bin/nodetool"; // Update this path
-	    ProcessBuilder processBuilder = new ProcessBuilder(nodetoolPath, "snapshot", "-t", snapshotName, keyspace);
-	    processBuilder.redirectErrorStream(true);
+		 String snapshotDirectory = "./checkpoints/" + this.myID + "/";
+		 File directory = new File(snapshotDirectory);
 
-	    Process process = processBuilder.start();
-	    process.waitFor();
+        //  Create directory if doesn't exist
+        if (!directory.exists()) {
+        	directory.mkdirs();
+        }
+		 
+		 
+		ResultSet results = session.execute("SELECT * FROM grade");		
+		Map<Integer,ArrayList<Integer>> tables = new HashMap<Integer, ArrayList<Integer>>();
+		for(Row row : results) {		
+				int curKey = row.getInt(0);
+				tables.put(curKey,new ArrayList<Integer>(row.getList(1,
+						Integer.class)));
+		}
+		
+		
+		ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(snapshotDirectory + snapshotName + ".ser"));
+		out.writeObject(tables);
+		out.close();
 	}
 
 	protected void restoreSnapshot(String snapshotName) throws IOException, InterruptedException {
-	    String nodetoolPath = "/opt/homebrew/Cellar/cassandra/4.1.3/bin/nodetool"; // Update this path
-	    ProcessBuilder processBuilder = new ProcessBuilder(nodetoolPath, "clearsnapshot", "-t", snapshotName, this.myID);
-	    processBuilder.redirectErrorStream(true);
-
-	    Process process = processBuilder.start();
-	    process.waitFor();
+		System.out.println("restoring");
+		ObjectInputStream in = new ObjectInputStream(new FileInputStream(snapshotName));
+		try {	
+			Map<Integer,ArrayList<Integer>> tables = (Map<Integer, ArrayList<Integer>>) in.readObject();
+			for (Map.Entry<Integer, ArrayList<Integer>> entry : tables.entrySet()) {
+			    Integer key = entry.getKey();
+			    ArrayList<Integer> values = entry.getValue();
+			    String query = "INSERT into grade (id, events) values (" + Integer.toString(key) + ", [";
+			    if (values.size() > 0) {
+			    	query += Integer.toString(values.get(0));
+				    for (int i = 1; i < values.size(); i++) {
+				    	query += "," + Integer.toString(values.get(i));
+				    }
+			    }
+			    query += "]);";
+			    session.execute(query);
+			}
+			
+			
+		} catch (ClassNotFoundException | IOException e) {
+//			e.printStackTrace();
+		}
+		in.close();
 	}
 
 	
 	protected void restoreLatestSnapshot() throws IOException, InterruptedException {
         // Specify the directory where snapshots are stored
-        String snapshotDirectory = "/var/lib/cassandra/data/" + this.myID + "/snapshots";
+        String snapshotDirectory = "./checkpoints/" + this.myID  + "/";;
 
         // Get a list of available snapshots
         List<String> snapshotNames = getAvailableSnapshots(snapshotDirectory);
@@ -286,7 +327,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // Restore the latest snapshot (assuming the list is sorted)
         if (!snapshotNames.isEmpty()) {
             String latestSnapshot = snapshotNames.get(snapshotNames.size() - 1);
-            this.last_executed_req_num = Integer.valueOf(latestSnapshot.split("_")[0]);
+            this.last_executed_req_num = Integer.valueOf(latestSnapshot.split("\\.")[0].split("_")[1]);
             restoreSnapshot(latestSnapshot);
         } else {
             System.out.println("No snapshots found for keyspace: " + this.myID);
@@ -352,7 +393,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
-	        Collections.sort(children, Collections.reverseOrder());
+	        Collections.sort(children);
 	        // Flag to determine if the lastExecReq has been found
 	        boolean foundLastExecReq = false;
 
@@ -373,7 +414,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	            // Update the lastExecReq
 	            last_executed_req_num = nodeInt;
 	        }
-	        
+          
 	        if(last_executed_req_num % 50 == 0) {
 	        	checkPoint();
 	        }
@@ -408,10 +449,10 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	protected class RequestsWatcher implements Watcher {
         @Override
         public void process(WatchedEvent event) {
+        	registerRequestsWatcher();
             if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
 	                // New znode created in /requests
 	            try {
-            		System.out.println("New znode created in /requests");
 	                rollForward();
 	                List<String> children = zk.getChildren("/requests", false);
 	                if(children.size() >= 400) {
@@ -420,7 +461,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	            		packet.put(MyDBClient.Keys.TYPE.toString(), "TRIM_LOGS");
 	            		serverMessenger.send(primary, packet.toString().getBytes());
 	                }
-	            	registerRequestsWatcher();
             	}
             	catch (KeeperException | InterruptedException | IOException | JSONException e) {
         	        e.printStackTrace();
