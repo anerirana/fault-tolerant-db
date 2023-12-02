@@ -106,6 +106,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
     final private Cluster cluster;
     
     protected Integer last_executed_req_num = -1;
+    protected Integer checkpoint_counter = 0;
     protected final String myID;
     protected final MessageNIOTransport<String,String> serverMessenger;
 
@@ -130,8 +131,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
                 .build()).connect(myID);
 		log.log(Level.INFO, "Server {0} added cluster contact point", new Object[]{myID,});
 
-		this.myID = myID;
-		
+		this.myID = myID;	
 		
 		this.serverMessenger =  new
                 MessageNIOTransport<String, String>(myID, nodeConfig,
@@ -158,28 +158,20 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         });
 		
 		try {
-			// TODO: Make sure to do any needed crash recovery here.
-			// Create sequential ephemeral node under live_nodes
-			String serverAddress = nodeConfig.getNodeAddress(myID) + ":" + nodeConfig.getNodePort(myID);
-			this.zk.create("/live_nodes/" + this.myID, 
-					serverAddress.getBytes(DEFAULT_ENCODING), 
-					ZooDefs.Ids.OPEN_ACL_UNSAFE,
-                    CreateMode.EPHEMERAL);
-			
+			// Crash recovery here.		
 			if (hasCheckpoint()) {
 				restoreLatestSnapshot();
 				rollForward();		
-			} else {			
+			} else {	
 				List<String> request_numbers = this.zk.getChildren("/requests",false);
-				Collections.sort(request_numbers);
-				if (request_numbers.size() > 0) {
+				Collections.sort(request_numbers);						
+				if (request_numbers.size() > 0) {					
 					if (Integer.valueOf(request_numbers.get(0)) == 0)
 						rollForward();
 					else
 						System.out.println("ERROR! Did not find checkpoint or initial logs");
 				}
-			}
-			
+			}		
 			registerRequestsWatcher();
 				
 		}
@@ -192,7 +184,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	
 	protected Boolean hasCheckpoint() {
 		// Specify the directory where snapshots are stored
-        String snapshotDirectory = "/var/lib/cassandra/data/" + this.myID + "/snapshots";
+        String snapshotDirectory = "./checkpoints/" + this.myID + "/";
 
         // Check if any snapshot is available
         return getAvailableSnapshots(snapshotDirectory).size() > 0;
@@ -205,18 +197,14 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 */
 	@Override
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
-		System.out.println(this.myID + " received request");
 		try {
 		String request = new String(bytes);
-		InetSocketAddress primary = getPrimary();
-			
-		JSONObject packet = new JSONObject();
-		packet.put(MyDBClient.Keys.REQUEST.toString(), request);
-		packet.put(MyDBClient.Keys.TYPE.toString(), "CLIENT_UPDATE");
-		
-		this.serverMessenger.send(primary, packet.toString().getBytes());
+		this.zk.create("/requests/", 
+				request.getBytes(), 
+				ZooDefs.Ids.OPEN_ACL_UNSAFE,
+                CreateMode.PERSISTENT_SEQUENTIAL);		
 		}
-		catch(JSONException | IOException | InterruptedException | KeeperException e) {
+		catch(InterruptedException | KeeperException e) {
 			e.printStackTrace();
 		}
 	}
@@ -225,24 +213,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	 * TODO: process bytes received from fellow servers here.
 	 */
 	protected void handleMessageFromServer(byte[] bytes, NIOHeader header) {
-		try {
-			JSONObject json = new JSONObject(new String(bytes));
-			String request = json.getString(AVDBClient.Keys.REQUEST.toString()); 
-			String requestType = json.getString(AVDBClient.Keys.TYPE.toString());
-					
-
-			if (requestType.equals("CLIENT_UPDATE")) {
-				
-			} else if (requestType.equals("TRIM_LOGS")) {
-				trimLogs();
-			}
-			this.zk.create("/requests/", 
-					request.getBytes(), 
-					ZooDefs.Ids.OPEN_ACL_UNSAFE,
-	                CreateMode.PERSISTENT_SEQUENTIAL);
-        } catch (KeeperException | JSONException | InterruptedException e) {
-            e.printStackTrace();
-        }
+		
 	}
 
 
@@ -256,7 +227,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		cluster.close();
 		try {
             zk.close();
-            System.out.println("zookeper connection closed");
+            LOGGER.log(Level.INFO, "zookeper connection closed");
         } catch (InterruptedException e) {
         	LOGGER.log(Level.SEVERE, "Error closing ZooKeeper connection", e);
         }
@@ -273,31 +244,48 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         //  Create directory if doesn't exist
         if (!directory.exists()) {
         	directory.mkdirs();
-        }
+        } 
 		 
-		 
+        // Get current state of the table
 		ResultSet results = session.execute("SELECT * FROM grade");		
 		Map<Integer,ArrayList<Integer>> tables = new HashMap<Integer, ArrayList<Integer>>();
 		for(Row row : results) {		
 				int curKey = row.getInt(0);
-				tables.put(curKey,new ArrayList<Integer>(row.getList(1,
-						Integer.class)));
-		}
+				tables.put(curKey,new ArrayList<Integer>(row.getList(1,Integer.class)));
+		}	
 		
-		
+		// Get the name of last snapshot taken
+        List<String> snapshotNames = getAvailableSnapshots(snapshotDirectory);
+        File lastSnapshot = null;
+        if (snapshotNames.size() > 0) {
+        	lastSnapshot = new File(snapshotDirectory + snapshotNames.get(0)); 
+        }
+        
+		// Serialize and save table object in file
 		ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(snapshotDirectory + snapshotName + ".ser"));
 		out.writeObject(tables);
 		out.close();
+
+		// delete the last snapshot
+		// only keep latest snapshots
+		if (lastSnapshot != null) {
+			lastSnapshot.delete();
+		}
+				
+		trimLogs();
 	}
 
 	protected void restoreSnapshot(String snapshotName) throws IOException, InterruptedException {
-		System.out.println("restoring");
 		ObjectInputStream in = new ObjectInputStream(new FileInputStream(snapshotName));
 		try {	
+			// Read table state from file
 			Map<Integer,ArrayList<Integer>> tables = (Map<Integer, ArrayList<Integer>>) in.readObject();
+			
+			// Execute query to insert saved table state
 			for (Map.Entry<Integer, ArrayList<Integer>> entry : tables.entrySet()) {
 			    Integer key = entry.getKey();
 			    ArrayList<Integer> values = entry.getValue();
+			    System.out.println("restoring key: " + key + " values: " + values);
 			    String query = "INSERT into grade (id, events) values (" + Integer.toString(key) + ", [";
 			    if (values.size() > 0) {
 			    	query += Integer.toString(values.get(0));
@@ -307,13 +295,11 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 			    }
 			    query += "]);";
 			    session.execute(query);
-			}
-			
-			
-		} catch (ClassNotFoundException | IOException e) {
-//			e.printStackTrace();
+			}		
+		} catch (ClassNotFoundException e) {
+			LOGGER.log(Level.SEVERE, "Error restoring snapshot!!\n Unrecognizable file format", e);		
 		}
-		in.close();
+		in.close();	
 	}
 
 	
@@ -324,13 +310,13 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         // Get a list of available snapshots
         List<String> snapshotNames = getAvailableSnapshots(snapshotDirectory);
 
-        // Restore the latest snapshot (assuming the list is sorted)
+        // Restore the latest snapshot (assuming only the most recent one is stored)
         if (!snapshotNames.isEmpty()) {
-            String latestSnapshot = snapshotNames.get(snapshotNames.size() - 1);
+            String latestSnapshot = snapshotNames.get(0);
             this.last_executed_req_num = Integer.valueOf(latestSnapshot.split("\\.")[0].split("_")[1]);
-            restoreSnapshot(latestSnapshot);
+            restoreSnapshot(snapshotDirectory + latestSnapshot);
         } else {
-            System.out.println("No snapshots found for keyspace: " + this.myID);
+            LOGGER.log(Level.WARNING, "No snapshots found for keyspace:" + this.myID);	
         }
     }
 
@@ -356,8 +342,8 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
     }
 	
 	protected void checkPoint() throws IOException,InterruptedException {
-		takeSnapshot(this.myID, "checkpoint_"+last_executed_req_num);
-       
+		// checkpoint with the last executed request number
+		takeSnapshot(this.myID, "checkpoint_" +last_executed_req_num);     
 	}
 	
 	protected void restore(String snapshotName) throws IOException,InterruptedException {
@@ -369,23 +355,20 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    try {
 	        // Get the list of children from ZooKeeper
 	        List<String> children = zk.getChildren("/requests", false);
-	        Collections.sort(children, Collections.reverseOrder());
+	        Collections.sort(children);
 	        // Check if there are at least 400 elements
 	        if (children.size() >= 400) {
 	            // Get the sublist of the first 100 elements
 	            List<String> sublist = children.subList(0, 50);
 
-	            // Remove the first 100 elements from the list
-	            children.removeAll(sublist);
-
-	            // Delete the corresponding nodes from ZooKeeper
+	            // Delete 100 request nodes from ZooKeeper
 	            for (String node : sublist) {
 	                String path = "/requests/" + node;
 	                zk.delete(path, -1);
 	            }
 	        }
 	    } catch (KeeperException | InterruptedException e) {
-	        e.printStackTrace();
+	    	LOGGER.log(Level.SEVERE, "Delete request node unsuccessful", e);	
 	    }
 	}
 	
@@ -408,42 +391,29 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	                foundLastExecReq = true;
 	            }
 
-	            // Execute the request (replace this with your logic)
-	            session.execute(new String(zk.getData("/requests/" + node, null,null)));
+	            // Execute the request
+	            session.execute(new String(zk.getData("/requests/" + node, null,null)));        
 
 	            // Update the lastExecReq
 	            last_executed_req_num = nodeInt;
+	            incrementCheckpointCounter();
+		        if(checkpoint_counter % 50 == 0) {
+		        	resetCheckpointCounter();
+		        	checkPoint();
+		        }
 	        }
-          
-	        if(last_executed_req_num % 50 == 0) {
-	        	checkPoint();
-	        }
-
 	    } catch (KeeperException | InterruptedException e) {
-	        e.printStackTrace();
+	    	LOGGER.log(Level.SEVERE, "Unable to execute pending requests");
 	    }
 	    return last_executed_req_num;
 	}
-
-	protected InetSocketAddress getPrimary() throws KeeperException, InterruptedException {
-	    try {
-	        // Get the list of children from ZooKeeper
-	    	 List<String> children = zk.getChildren("/live_nodes", false);
-
-		    // Check if the list is not null and not empty before accessing elements
-		    if (children != null && !children.isEmpty()) {
-		    	
-		    	String[] parts = new String(this.zk.getData("/live_nodes/" + this.myID, null, null), DEFAULT_ENCODING).split(":");
-	        	InetSocketAddress primaryIP = new InetSocketAddress(parts[0].split("/")[0], Integer.parseInt(parts[1]));
-		        return primaryIP;
-		    } else {
-		        // Handle the case where the list is null or empty
-		        return null; // You can return a default value or handle it based on your requirements
-		    }
-	    } catch (KeeperException | InterruptedException | UnsupportedEncodingException e) {
-	        e.printStackTrace();
-	    }
-	    return null;
+	
+	protected synchronized void incrementCheckpointCounter() {
+		++checkpoint_counter;
+	}
+	
+	protected synchronized void resetCheckpointCounter() {
+		checkpoint_counter = 0;
 	}
 
 	protected class RequestsWatcher implements Watcher {
@@ -452,19 +422,11 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         	registerRequestsWatcher();
             if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
 	                // New znode created in /requests
-	            try {
-	                rollForward();
-	                List<String> children = zk.getChildren("/requests", false);
-	                if(children.size() >= 400) {
-	                	InetSocketAddress primary = getPrimary();    	
-	                	JSONObject packet = new JSONObject();
-	            		packet.put(MyDBClient.Keys.TYPE.toString(), "TRIM_LOGS");
-	            		serverMessenger.send(primary, packet.toString().getBytes());
-	                }
-            	}
-            	catch (KeeperException | InterruptedException | IOException | JSONException e) {
-        	        e.printStackTrace();
-        	    }
+            	try {
+					rollForward();
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
             }
         }
     }
@@ -473,8 +435,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         try {
             // Get children and set a watch
             List<String> children = zk.getChildren("/requests", new RequestsWatcher());
-            Collections.sort(children, Collections.reverseOrder());
-            System.out.println("Current children of /requests: " + children);
         } catch (InterruptedException | KeeperException e) {
             e.printStackTrace();
         }
