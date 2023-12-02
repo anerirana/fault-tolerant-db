@@ -33,7 +33,6 @@ import org.json.JSONObject;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs;
-import org.apache.zookeeper.AddWatchMode;
 
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -162,7 +161,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 				restoreLatestSnapshot();
 				rollForward();		
 			} else {	
-				List<String> request_numbers = this.zk.getChildren("/requests",false);
+				List<String> request_numbers = this.zk.getChildren("/requests", new RequestsWatcher());
 				Collections.sort(request_numbers);						
 				if (request_numbers.size() > 0) {					
 					if (Integer.valueOf(request_numbers.get(0)) == 0)
@@ -284,7 +283,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 			for (Map.Entry<Integer, ArrayList<Integer>> entry : tables.entrySet()) {
 			    Integer key = entry.getKey();
 			    ArrayList<Integer> values = entry.getValue();
-			    System.out.println("restoring key: " + key + " values: " + values);
 			    String query = "INSERT into grade (id, events) values (" + Integer.toString(key) + ", [";
 			    if (values.size() > 0) {
 			    	query += Integer.toString(values.get(0));
@@ -353,7 +351,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	protected void trimLogs() {
 	    try {
 	        // Get the list of children from ZooKeeper
-	        List<String> children = zk.getChildren("/requests", false);
+	        List<String> children = zk.getChildren("/requests", new RequestsWatcher());
 	        Collections.sort(children);
 	        // Check if there are at least 400 elements
 	        if (children.size() >= 400) {
@@ -374,7 +372,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	protected int rollForward() throws IOException {
 	    try {
 	        // Get the list of children from ZooKeeper
-	        List<String> children = zk.getChildren("/requests", false);
+	        List<String> children = zk.getChildren("/requests", new RequestsWatcher());
 	        Collections.sort(children);
 	        // Flag to determine if the lastExecReq has been found
 	        boolean foundLastExecReq = false;
@@ -408,7 +406,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	protected class RequestsWatcher implements Watcher {
         @Override
         public void process(WatchedEvent event) {
-        	registerRequestsWatcher();
             if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
 	                // New znode created in /requests
             	try {
@@ -417,6 +414,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 					e.printStackTrace();
 				}
             }
+        	registerRequestsWatcher();
         }
     }
 	
