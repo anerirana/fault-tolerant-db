@@ -106,7 +106,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
     final private Cluster cluster;
     
     protected Integer last_executed_req_num = -1;
-    protected Integer checkpoint_counter = 0;
     protected final String myID;
     protected final MessageNIOTransport<String,String> serverMessenger;
 
@@ -396,9 +395,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
 	            // Update the lastExecReq
 	            last_executed_req_num = nodeInt;
-	            incrementCheckpointCounter();
-		        if(checkpoint_counter % 50 == 0) {
-		        	resetCheckpointCounter();
+		        if(last_executed_req_num % 50 == 0) {
 		        	checkPoint();
 		        }
 	        }
@@ -406,14 +403,6 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    	LOGGER.log(Level.SEVERE, "Unable to execute pending requests");
 	    }
 	    return last_executed_req_num;
-	}
-	
-	protected synchronized void incrementCheckpointCounter() {
-		++checkpoint_counter;
-	}
-	
-	protected synchronized void resetCheckpointCounter() {
-		checkpoint_counter = 0;
 	}
 
 	protected class RequestsWatcher implements Watcher {
