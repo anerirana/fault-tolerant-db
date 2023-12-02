@@ -156,12 +156,12 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
             }
         });		
 		
+		List<String> request_numbers = getPendingRequests();
 		// Crash recovery here.		
 		if (hasCheckpoint()) {
 			restoreLatestSnapshot();
 			rollForward();		
-		} else {	
-			List<String> request_numbers = getPendingRequests();						
+		} else {						
 			if (request_numbers.size() > 0) {					
 				if (Integer.valueOf(request_numbers.get(0)) == 0)
 					rollForward();
