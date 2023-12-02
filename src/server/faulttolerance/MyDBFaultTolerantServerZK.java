@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Collections;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.util.ArrayList;
 import com.datastax.driver.core.ResultSet;
@@ -153,31 +154,22 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
                 	System.out.println("Children data changed.");
                 }
             }
-        });
+        });		
 		
-		try {
-			// Crash recovery here.		
-			if (hasCheckpoint()) {
-				restoreLatestSnapshot();
-				rollForward();		
-			} else {	
-				List<String> request_numbers = this.zk.getChildren("/requests", new RequestsWatcher());
-				Collections.sort(request_numbers);						
-				if (request_numbers.size() > 0) {					
-					if (Integer.valueOf(request_numbers.get(0)) == 0)
-						rollForward();
-					else
-						System.out.println("ERROR! Did not find checkpoint or initial logs");
-				}
-			}		
-			registerRequestsWatcher();
-				
-		}
-		catch (KeeperException e) {
-				e.printStackTrace();
-		} catch (InterruptedException e) {
-				e.printStackTrace();
-		}
+		// Crash recovery here.		
+		if (hasCheckpoint()) {
+			restoreLatestSnapshot();
+			rollForward();		
+		} else {	
+			List<String> request_numbers = getPendingRequests();						
+			if (request_numbers.size() > 0) {					
+				if (Integer.valueOf(request_numbers.get(0)) == 0)
+					rollForward();
+				else
+					System.out.println("ERROR! Did not find checkpoint or initial logs");
+			}
+		}		
+		getPendingRequests();
 	}
 	
 	protected Boolean hasCheckpoint() {
@@ -190,20 +182,18 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 
 	/**
 	 * TODO: process bytes received from clients here.
-	 * @throws InterruptedException 
-	 * @throws KeeperException 
 	 */
 	@Override
 	protected void handleMessageFromClient(byte[] bytes, NIOHeader header) {
-		try {
 		String request = new String(bytes);
+		try {
 		this.zk.create("/requests/", 
 				request.getBytes(), 
 				ZooDefs.Ids.OPEN_ACL_UNSAFE,
                 CreateMode.PERSISTENT_SEQUENTIAL);		
 		}
 		catch(InterruptedException | KeeperException e) {
-			e.printStackTrace();
+			LOGGER.log(Level.SEVERE, "Error creating request node for: " + request, e);
 		}
 	}
 
@@ -235,7 +225,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		CHECKPOINT, RESTORE;
 	}
 	
-	protected void takeSnapshot(String keyspace, String snapshotName) throws IOException, InterruptedException {
+	protected void takeSnapshot(String keyspace, String snapshotName) {
 		 String snapshotDirectory = "./checkpoints/" + this.myID + "/";
 		 File directory = new File(snapshotDirectory);
 
@@ -260,9 +250,14 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         }
         
 		// Serialize and save table object in file
-		ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(snapshotDirectory + snapshotName + ".ser"));
-		out.writeObject(tables);
-		out.close();
+		ObjectOutputStream out;
+		try {
+			out = new ObjectOutputStream(new FileOutputStream(snapshotDirectory + snapshotName + ".ser"));
+			out.writeObject(tables);
+			out.close();
+		} catch (IOException e) {
+			LOGGER.log(Level.SEVERE, "Error writing to snapshot file: " + snapshotName, e);
+		}
 
 		// delete the last snapshot
 		// only keep latest snapshots
@@ -273,9 +268,9 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 		trimLogs();
 	}
 
-	protected void restoreSnapshot(String snapshotName) throws IOException, InterruptedException {
-		ObjectInputStream in = new ObjectInputStream(new FileInputStream(snapshotName));
-		try {	
+	protected void restoreSnapshot(String snapshotName) {	
+		try {
+			ObjectInputStream in = new ObjectInputStream(new FileInputStream(snapshotName));
 			// Read table state from file
 			Map<Integer,ArrayList<Integer>> tables = (Map<Integer, ArrayList<Integer>>) in.readObject();
 			
@@ -292,15 +287,18 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 			    }
 			    query += "]);";
 			    session.execute(query);
-			}		
+			}
+			in.close();	
 		} catch (ClassNotFoundException e) {
 			LOGGER.log(Level.SEVERE, "Error restoring snapshot!!\n Unrecognizable file format", e);		
+		} catch (IOException e) {
+			LOGGER.log(Level.SEVERE, "Error reading snapshot file", e);
 		}
-		in.close();	
+		
 	}
 
 	
-	protected void restoreLatestSnapshot() throws IOException, InterruptedException {
+	protected void restoreLatestSnapshot() {
         // Specify the directory where snapshots are stored
         String snapshotDirectory = "./checkpoints/" + this.myID  + "/";;
 
@@ -338,12 +336,12 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         return snapshotNames;
     }
 	
-	protected void checkPoint() throws IOException,InterruptedException {
+	protected void checkPoint() {
 		// checkpoint with the last executed request number
 		takeSnapshot(this.myID, "checkpoint_" +last_executed_req_num);     
 	}
 	
-	protected void restore(String snapshotName) throws IOException,InterruptedException {
+	protected void restore(String snapshotName) {
 		restoreSnapshot(snapshotName);
 		rollForward();
 	}
@@ -351,8 +349,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	protected void trimLogs() {
 	    try {
 	        // Get the list of children from ZooKeeper
-	        List<String> children = zk.getChildren("/requests", new RequestsWatcher());
-	        Collections.sort(children);
+	        List<String> children = getPendingRequests();
 	        // Check if there are at least 400 elements
 	        if (children.size() >= 400) {
 	            // Get the sublist of the first 100 elements
@@ -369,11 +366,10 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	    }
 	}
 	
-	protected int rollForward() throws IOException {
+	protected int rollForward() {
 	    try {
 	        // Get the list of children from ZooKeeper
-	        List<String> children = zk.getChildren("/requests", new RequestsWatcher());
-	        Collections.sort(children);
+	        List<String> children = getPendingRequests();
 	        // Flag to determine if the lastExecReq has been found
 	        boolean foundLastExecReq = false;
 
@@ -408,22 +404,21 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
         public void process(WatchedEvent event) {
             if (event.getType() == Watcher.Event.EventType.NodeChildrenChanged) {
 	                // New znode created in /requests
-            	try {
-					rollForward();
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
+            	rollForward();
             }
-        	registerRequestsWatcher();
+        	getPendingRequests();
         }
     }
 	
-	protected void registerRequestsWatcher() {
+	protected List<String> getPendingRequests() {
         try {
             // Get children and set a watch
             List<String> children = zk.getChildren("/requests", new RequestsWatcher());
+            Collections.sort(children);
+            return children;
         } catch (InterruptedException | KeeperException e) {
-            e.printStackTrace();
+        	LOGGER.log(Level.SEVERE, "Error retrieving /requests children and register watcher", e);
+            return null;
         }
     }
 	
