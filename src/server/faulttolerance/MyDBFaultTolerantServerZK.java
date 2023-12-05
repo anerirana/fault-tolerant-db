@@ -61,7 +61,7 @@ import com.datastax.driver.core.Row;
  * server-server messaging or to {@link server.AVDBReplicatedServer} for a
  * non-fault-tolerant replicated server.
  * <p>
- * You can assume that a single *fault-tolerant* Zookeeper server at the default
+ * You can assume that a single fault-tolerant Zookeeper server at the default
  * host:port of localhost:2181 and you can use this service as you please in the
  * implementation of this class.
  * <p>
@@ -154,7 +154,15 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
                 	System.out.println("Children data changed.");
                 }
             }
-        });		
+        });	
+		
+		try {
+			if (zk.exists("/requests", false) ==  null) {
+		    	this.zk.create("/requests", null, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+		    }
+		} catch (KeeperException | InterruptedException e) {
+			LOGGER.log(Level.SEVERE, "Error creating /requests node", e);
+		}
 		
 		List<String> request_numbers = getPendingRequests();
 		// Crash recovery here.		
@@ -367,7 +375,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	}
 	
 	protected int rollForward() {
-	    try {
+	    try {     
 	        // Get the list of children from ZooKeeper
 	        List<String> children = getPendingRequests();
 	        // Flag to determine if the lastExecReq has been found
@@ -385,8 +393,7 @@ public class MyDBFaultTolerantServerZK extends server.MyDBSingleServer {
 	            }
 
 	            // Execute the request
-	            session.execute(new String(zk.getData("/requests/" + node, null,null)));        
-
+	            session.execute(new String(zk.getData("/requests/" + node, null,null)));   
 	            // Update the lastExecReq
 	            last_executed_req_num = nodeInt;
 		        if(last_executed_req_num % 50 == 0) {
